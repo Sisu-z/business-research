@@ -205,7 +205,7 @@ def main():
                 fail(loc, 'unknown access classification')
             if item['review_status'] not in {'checked_against_saved_text', 'awaiting_review', 'checked_at_source'}:
                 fail(loc, 'unknown review classification')
-            if item['acquisition'] not in {'legacy_browser_observation', 'browser_observation', 'user_provided_capture'}:
+            if item['acquisition'] not in {'legacy_browser_observation', 'browser_observation', 'user_provided_capture', 'web_page_extraction'}:
                 fail(loc, 'unknown acquisition classification')
             if item['observed_at'] is not None and not check_timestamp(item['observed_at']):
                 fail(loc, 'observed_at must include timezone or be null')

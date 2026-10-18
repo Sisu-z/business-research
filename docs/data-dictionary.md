@@ -9,9 +9,9 @@
 |`schema_version`|固定1；变更字段时同步此文和检查工具|
 |`id`|唯一；能与阶段记录和证据索引对应|
 |`platform`, `url`, `title`|真实平台、干净公开详情URL、自写去身份标题|
-|`observed_at`, `observed_date`|原观察ISO时间含时区；旧资料缺确切时刻时前者null，后者明确日期|
+|`observed_at`, `observed_date`|原观察ISO时间含时区；确切观察时刻缺失时前者null，后者注明能确认的日期，并在限制中解释；不以导入时间或页面发布日期冒充观察时刻|
 |`imported_at`|本条整理入库时间，不替代原观察时间|
-|`acquisition`|当前导入为`legacy_browser_observation`；新现场用`browser_observation`，用户截图用`user_provided_capture`|
+|`acquisition`|旧现场导入为`legacy_browser_observation`；浏览器现场用`browser_observation`，用户截图用`user_provided_capture`，公开网页工具提取用`web_page_extraction`；后者不标成浏览器或App实测|
 |`access`|`public_web`、`logged_in_public`、`unknown`；不猜登录状态|
 |`review_status`|`checked_against_saved_text`、`awaiting_review`；新现场人工核过可用`checked_at_source`；均不代表成交已核|
 |`publication`|公共样本固定`public_summary`；私有资料不要混入此库|
@@ -25,8 +25,12 @@
 |`evidence`|`id`、`kind`、`availability`、`public_pointer`、`integrity_sha256`；不包含本机私有路径|
 |`limitations`|截断、截图未核、登录/区域差异、指标口径、样本偏差等|
 
-价格支持CNY、SGD等ISO币种；不强行换汇。`prices` 和 `metrics` 允许空数组。没有可靠金额或数量用空项，不用0占未知。一级指标的对象范围不清时不能变成具体SKU销量。
+价格支持CNY、SGD等ISO币种；不强行换汇。`prices` 和 `metrics` 允许空数组。没有可靠金额或数量用空项，不用0占未知。原标签如200+须保留；数值字段可记可核门槛200，但meaning须注明是下限，不能变精确订单数。一级指标的对象范围不清时不能变成具体SKU销量。
+
+公开网页提取可能省略回复、图片或动态内容，须记录实际返回范围及空白/截断限制；页面列出的回复总数不代表已读同样数量的正文。只有调用日期或会话时段而无确切时刻时，`observed_at=null`；文件保存或整理时间不补作访问时间。保存文字复核使用`checked_against_saved_text`，不冒充复访。
 
 原始证据只在本机时，`availability=local_only`、`public_pointer=null`。`kind=saved_page_text` 表示保存页面文字，`kind=saved_observation_record` 只表示执行者的结构化记录，两者不能混称原文。`integrity_sha256` 对应本机原文件校验值，可核文件一致性，不能证明来源真实。引用公开裁剪时必须先去身份和权利审查，并记录仓库相对路径；不存在的附件不能写`public`。
+
+`kind=saved_source_pdf`表示保存原始PDF，不能与PDF渲染截图混称；两者如同时使用，应分别描述实际核读范围。
 
 新采样的完整过程记录在 [会话模板](../templates/session.md)，公开样本不承担所有操作日志。评论中若发现新的独立需求可记单独线索，但不能用一篇帖子的评论数扩充独立页面样本数。
