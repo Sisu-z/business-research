@@ -2,6 +2,8 @@
 
 更新日期：2026-10-18（Asia/Shanghai）。接手先核对当前分支、提交与 [任务记录](tasks/README.md)；聊天不是完整项目状态。
 
+公开仓库已建立：[Sisu-z/business-research](https://github.com/Sisu-z/business-research)，默认分支`main`。初始建设与样本基线为`b4095649ba57bbc64b9cdd7156837ab67e20c8af`；此后接手应拉取最新提交，不能把这个初始SHA当作永远有效的状态。
+
 ## 授权与状态
 
 - 用户已明确授权建立 GitHub **公开**仓库、写清项目文档和交接产物、整理既有资料。
