@@ -1,0 +1,18 @@
+# 原始材料与本机状态不进入公开Git历史
+private/
+raw/
+captures/
+outputs/
+.env
+.env.*
+*.har
+*.cookie
+*.cookies
+*.sqlite
+*.sqlite3
+auth.json
+storage-state*.json
+browser-state*.json
+__pycache__/
+*.pyc
+.DS_Store
