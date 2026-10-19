@@ -2,13 +2,14 @@
 """Check public project structure; never browse or authenticate to platforms."""
 import argparse
 import datetime as dt
+import html
 import json
 import math
 import os
 from pathlib import Path
 import re
 import subprocess
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 IGNORED_DIRS = {'.git', 'private', 'raw', 'captures', 'outputs', '__pycache__'}
@@ -32,15 +33,25 @@ SENSITIVE_PATTERNS = [
     ('email address', re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')),
     ('personal phone number', re.compile(r'(?<![A-Za-z0-9])1[3-9][0-9]{9}(?![A-Za-z0-9])')),
 ]
+URL_PATTERN = re.compile(r'https?://[^\s<>\"\x27`]+', re.IGNORECASE)
 
 
 def public_files(staged):
     if staged:
         result = subprocess.run(
-            ['git', 'ls-files', '--cached', '-z'], cwd=ROOT,
+            ['git', 'ls-files', '--stage', '-z'], cwd=ROOT,
             capture_output=True, check=True,
         )
-        return [ROOT / p.decode() for p in result.stdout.split(b'\0') if p]
+        paths = {}
+        for entry in result.stdout.split(b'\0'):
+            if not entry:
+                continue
+            metadata, name = entry.split(b'\t', 1)
+            mode, object_id, stage = metadata.split()
+            if stage != b'0':
+                raise ValueError('unmerged index; resolve conflicts before checking')
+            paths[ROOT / name.decode('utf-8')] = (mode, object_id.decode('ascii'))
+        return paths
     paths = []
     for directory, folders, files in os.walk(ROOT):
         folders[:] = [f for f in folders if f not in IGNORED_DIRS]
@@ -48,7 +59,39 @@ def public_files(staged):
             if name == '.DS_Store' or name.endswith('.pyc'):
                 continue
             paths.append(Path(directory) / name)
-    return sorted(paths)
+    return {path: None for path in sorted(paths)}
+
+
+def urls_in(value):
+    """Inspect string values at every JSON depth, including evidence pointers."""
+    if isinstance(value, str):
+        yield from URL_PATTERN.findall(value)
+    elif isinstance(value, dict):
+        for nested in value.values():
+            yield from urls_in(nested)
+    elif isinstance(value, list):
+        for nested in value:
+            yield from urls_in(nested)
+
+
+def url_privacy_issues(value):
+    try:
+        url = urlsplit(html.unescape(value))
+    except ValueError:
+        return ['invalid URL; inspect locally']
+    issues = []
+    if url.username is not None or url.password is not None:
+        issues.append('URL contains access credentials')
+    # Fragments can carry login tokens too; ordinary anchors remain valid.
+    fragment_query = url.fragment.split('?', 1)[-1] if '=' in url.fragment else ''
+    keys = {
+        key.casefold()
+        for query in (url.query, fragment_query)
+        for key, _ in parse_qsl(query, keep_blank_values=True)
+    }
+    if keys & TRACKING_OR_SECRET:
+        issues.append('tracking or access-bearing URL parameter')
+    return issues
 
 
 def valid_number(value):
@@ -66,18 +109,31 @@ def check_timestamp(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--staged', action='store_true', help='check files in the Git index by reading their working copies')
+    parser.add_argument('--staged', action='store_true', help='check the actual file contents and modes in the Git index')
     args = parser.parse_args()
     errors = []
     ids = set()
     records = 0
-    files = public_files(args.staged)
+    try:
+        files = public_files(args.staged)
+    except ValueError as error:
+        print(f'FAILED: {error}; no remote pages were accessed.')
+        return 1
+    available_paths = set(files)
+    if args.staged:
+        for path in files:
+            available_paths.update(parent for parent in path.parents if parent.is_relative_to(ROOT))
 
     def fail(location, message):
         # Do not print potentially sensitive matched text.
         errors.append(f'{location}: {message}')
 
-    for path in files:
+    def check_urls(value, location):
+        for url in set(urls_in(value)):
+            for issue in url_privacy_issues(url):
+                fail(location, issue)
+
+    for path, index_entry in files.items():
         rel = str(path.relative_to(ROOT))
         if any(part in IGNORED_DIRS for part in path.relative_to(ROOT).parts):
             fail(rel, 'private/raw output is included in public selection')
@@ -85,28 +141,42 @@ def main():
         if path.suffix not in ALLOWED_SUFFIXES and path.name != '.gitignore':
             fail(rel, 'unexpected file type; review before publishing')
             continue
-        if path.is_symlink():
+        if (index_entry is not None and index_entry[0] == b'120000') or (index_entry is None and path.is_symlink()):
             fail(rel, 'symlink needs explicit review')
             continue
-        text = path.read_text(encoding='utf-8')
+        try:
+            if index_entry is not None:
+                result = subprocess.run(
+                    ['git', 'cat-file', 'blob', index_entry[1]], cwd=ROOT,
+                    capture_output=True, check=True,
+                )
+                text = result.stdout.decode('utf-8')
+            else:
+                text = path.read_text(encoding='utf-8')
+        except UnicodeDecodeError:
+            fail(rel, 'public text must be UTF-8')
+            continue
         for label, pattern in SENSITIVE_PATTERNS:
             if pattern.search(text):
                 fail(rel, f'possible {label}; inspect locally')
         if path.suffix == '.md':
+            check_urls(text, rel)
             # Relative file links only. External availability is not checked.
             for target in re.findall(r'\]\(([^)]+)\)', text):
                 target = target.strip().split(' "')[0].strip('<>')
-                if not target or target.startswith(('#', 'http://', 'https://')):
+                if not target or target.lower().startswith(('#', 'http://', 'https://')):
                     continue
                 if '://' in target or target.startswith('mailto:'):
                     fail(rel, 'unexpected link scheme')
                     continue
-                dest = (path.parent / unquote(target.split('#')[0])).resolve()
-                if not dest.is_relative_to(ROOT) or not dest.exists():
+                candidate = path.parent / unquote(target.split('#')[0])
+                dest = Path(os.path.abspath(candidate)) if args.staged else candidate.resolve()
+                exists = dest in available_paths if args.staged else dest.exists()
+                if not dest.is_relative_to(ROOT) or not exists:
                     fail(rel, f'missing or outside-project relative link: {target}')
         if path.suffix == '.json':
             try:
-                json.loads(text)
+                check_urls(json.loads(text), rel)
             except json.JSONDecodeError:
                 fail(rel, 'invalid JSON')
         if path.suffix != '.jsonl':
@@ -120,6 +190,7 @@ def main():
             except json.JSONDecodeError:
                 fail(loc, 'invalid JSONL record')
                 continue
+            check_urls(item, loc)
             if not isinstance(item, dict) or not REQUIRED.issubset(item):
                 fail(loc, 'missing required record fields')
                 continue
@@ -134,7 +205,7 @@ def main():
                 fail(loc, 'unknown access classification')
             if item['review_status'] not in {'checked_against_saved_text', 'awaiting_review', 'checked_at_source'}:
                 fail(loc, 'unknown review classification')
-            if item['acquisition'] not in {'legacy_browser_observation', 'browser_observation', 'user_provided_capture'}:
+            if item['acquisition'] not in {'legacy_browser_observation', 'browser_observation', 'user_provided_capture', 'web_page_extraction'}:
                 fail(loc, 'unknown acquisition classification')
             if item['observed_at'] is not None and not check_timestamp(item['observed_at']):
                 fail(loc, 'observed_at must include timezone or be null')
@@ -147,8 +218,6 @@ def main():
             url = urlsplit(item['url'])
             if url.scheme != 'https' or not url.netloc or url.username or url.password:
                 fail(loc, 'invalid public HTTPS URL')
-            if set(parse_qs(url.query)) & TRACKING_OR_SECRET:
-                fail(loc, 'tracking or access-bearing URL parameter')
             for field in ['direct_observations', 'prices', 'metrics', 'mechanism_hypotheses', 'unverified', 'anomalies', 'evidence', 'limitations']:
                 if not isinstance(item[field], list):
                     fail(loc, f'{field} must be an array')
